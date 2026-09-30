@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>PAD Route Solver Ver.2</title>
+<style>
+body{margin:0;background:#0d0f14;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:760px;margin:auto;padding:18px}
+h1{font-size:25px;margin:8px 0}.muted{color:#aeb5c3;line-height:1.55}
+.card{background:#171a22;border:1px solid #303646;border-radius:17px;padding:15px;margin:12px 0}
+.btn,button{display:inline-block;background:#fff;color:#111;border:0;border-radius:12px;padding:13px 15px;font-weight:750;font-size:16px;margin:4px}
+button.alt{background:#303646;color:#fff}
+input[type=file]{position:absolute;left:-9999px}
+select{font-size:16px;padding:9px;border-radius:10px;background:#262a33;color:white}
+.controls{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+#previewWrap{display:none;position:relative;width:100%;margin-top:12px;background:#050609;border-radius:12px;overflow:hidden}
+#preview{display:block;width:100%;height:auto}
+#overlay{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+#msg{font-weight:750;line-height:1.45}
+.ok{color:#71e79c}.err{color:#ff7388}
+#editor{display:grid;gap:4px;margin-top:12px}
+.cell{aspect-ratio:1;border:2px solid #ffffff30;border-radius:50%;padding:0;margin:0;font-size:12px}
+.f{background:#dc563d}.w{background:#438ed9}.g{background:#48a66c}.l{background:#dcc94e;color:#111}.d{background:#8452aa}.h{background:#df5a91}
+details{margin-top:10px}
+</style>
+</head>
+<body><main>
+<h1>PAD Route Solver <small>Ver.2</small></h1>
+<p class="muted">iPhone対応テスト版：画像を選ぶと、まず必ずプレビュー表示を試します。</p>
+
+<div class="card">
+<div class="controls">
+<label class="btn" for="picker">📷 スクショを選ぶ</label>
+<input id="picker" type="file" accept="image/jpeg,image/png,image/*">
+<label>盤面
+<select id="boardSize"><option value="6x5">6×5</option><option value="7x6">7×6</option></select>
+</label>
+<label>操作
+<select id="seconds"><option>4</option><option>5</option><option selected>6</option><option>8</option><option>10</option></select>秒
+</label>
+</div>
+<p id="msg">① まず「スクショを選ぶ」を押してください。</p>
+<div id="previewWrap"><img id="preview" alt="選択したスクリーンショット"><canvas id="overlay"></canvas></div>
+</div>
+
+<div class="card">
+<b>盤面の指定</b>
+<p class="muted">画像が表示されたら、盤面の<strong>左上から右下</strong>まで指でなぞって囲んでください。</p>
+<div class="controls">
+<button id="recognize" disabled>② ドロップ認識</button>
+<button id="solve" disabled>③ ルート探索</button>
+<button id="clear" class="alt">ルート消去</button>
+</div>
+</div>
+
+<div class="card">
+<b>認識結果</b>
+<div id="editor"></div>
+<p class="muted">誤認識したマスはタップすると「火→水→木→光→闇→回」の順に変更できます。</p>
+</div>
+
+<div class="card">
+<details><summary>動かない場合の診断情報</summary><pre id="debug" style="white-space:pre-wrap"></pre></details>
+</div>
+
+<script>
+(function(){
+"use strict";
+const $=s=>document.querySelector(s);
+const picker=$("#picker"), img=$("#preview"), wrap=$("#previewWrap"), cv=$("#overlay"), ctx=cv.getContext("2d");
+const msg=$("#msg"), debug=$("#debug"), rec=$("#recognize"), sol=$("#solve"), editor=$("#editor");
+const TYPES=["f","w","g","l","d","h"], NAME={f:"火",w:"水",g:"木",l:"光",d:"闇",h:"回"};
+let board=[],crop=null,route=[],drag=false,start=null,objectURL=null;
+
+function log(x){debug.textContent += x+"\n"}
+window.onerror=(m,s,l,c,e)=>{msg.className="err";msg.textContent="エラー: "+m;log("JS ERROR "+m+" line "+l)};
+log("JavaScript: 起動OK");
+log("UserAgent: "+navigator.userAgent);
+
+function dims(){return $("#boardSize").value==="7x6"?[7,6]:[6,5]}
+function fitCanvas(){
+ const r=img.getBoundingClientRect(), d=window.devicePixelRatio||1;
+ cv.width=Math.max(1,Math.round(r.width*d)); cv.height=Math.max(1,Math.round(r.height*d));
+ draw();
+}
+function point(e){const r=cv.getBoundingClientRect(),d=window.devicePixelRatio||1;return{x:(e.clientX-r.left)*d,y:(e.clientY-r.top)*d}}
+
+picker.addEventListener("change",function(){
+ try{
+  const f=this.files && this.files[0];
+  log("change event: "+(f?f.name:"no file"));
+  if(!f){msg.textContent="画像が選択されませんでした。";return}
+  msg.className=""; msg.textContent="画像を読み込み中…";
+  if(objectURL) URL.revokeObjectURL(objectURL);
+  objectURL=URL.createObjectURL(f);
+  img.onload=function(){
+   wrap.style.display="block";
+   requestAnimationFrame(()=>{fitCanvas(); msg.className="ok";msg.textContent="画像を読み込めました！ 次に盤面を左上→右下へ囲んでください。";rec.disabled=false;log("image loaded "+img.naturalWidth+"x"+img.naturalHeight)});
+  };
+  img.onerror=function(){
+   msg.className="err";msg.textContent="画像を表示できませんでした。別のスクショ（PNG/JPEG）で試してください。";log("image onerror");
+  };
+  img.src=objectURL;
+ }catch(e){msg.className="err";msg.textContent="画像選択エラー: "+e.message;log(e.stack||e.message)}
+});
+
+cv.addEventListener("pointerdown",e=>{if(!img.naturalWidth)return;drag=true;start=point(e);crop={x:start.x,y:start.y,w:0,h:0};try{cv.setPointerCapture(e.pointerId)}catch(_){}});
+cv.addEventListener("pointermove",e=>{if(!drag)return;const p=point(e);crop={x:Math.min(start.x,p.x),y:Math.min(start.y,p.y),w:Math.abs(p.x-start.x),h:Math.abs(p.y-start.y)};draw()});
+cv.addEventListener("pointerup",()=>{drag=false;draw();if(crop&&crop.w>30&&crop.h>30){msg.className="ok";msg.textContent="盤面範囲を指定しました。「② ドロップ認識」を押してください。"}});
+cv.addEventListener("pointercancel",()=>drag=false);
+
+function draw(){
+ ctx.clearRect(0,0,cv.width,cv.height);
+ if(crop){ctx.strokeStyle="#fff";ctx.lineWidth=3*(devicePixelRatio||1);ctx.strokeRect(crop.x,crop.y,crop.w,crop.h)}
+ if(route.length&&crop){
+  const [cols,rows]=dims(),d=devicePixelRatio||1;
+  const center=i=>({x:crop.x+(i%cols+.5)*crop.w/cols,y:crop.y+(Math.floor(i/cols)+.5)*crop.h/rows});
+  ctx.strokeStyle="rgba(255,255,255,.95)";ctx.lineWidth=5*d;ctx.lineCap="round";ctx.lineJoin="round";ctx.beginPath();
+  route.forEach((i,k)=>{const p=center(i);k?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y)});ctx.stroke();
+  route.forEach((i,k)=>{const p=center(i);ctx.fillStyle=k===0?"#ff375f":"#fff";ctx.beginPath();ctx.arc(p.x,p.y,(k?4:9)*d,0,Math.PI*2);ctx.fill()});
+  const p=center(route[0]);ctx.fillStyle="#fff";ctx.font=(12*d)+"px sans-serif";ctx.fillText("START",p.x+10*d,p.y-9*d);
+ }
+}
+function classify(r,g,b){
+ let max=Math.max(r,g,b),min=Math.min(r,g,b),dd=max-min,h=0;
+ if(dd){if(max===r)h=((g-b)/dd)%6;else if(max===g)h=(b-r)/dd+2;else h=(r-g)/dd+4;h*=60;if(h<0)h+=360}
+ if(r>145&&b>105&&r>g*1.08)return"h";
+ if(h<28||h>345)return"f"; if(h<72)return"l"; if(h<175)return"g"; if(h<250)return"w"; return"d";
+}
+rec.onclick=function(){
+ try{
+  if(!crop||crop.w<30||crop.h<30){msg.className="err";msg.textContent="先に画像上の盤面全体を指で囲んでください。";return}
+  const off=document.createElement("canvas"),oc=off.getContext("2d",{willReadFrequently:true});
+  off.width=img.naturalWidth;off.height=img.naturalHeight;oc.drawImage(img,0,0);
+  const sx=img.naturalWidth/cv.width,sy=img.naturalHeight/cv.height,[cols,rows]=dims();board=[];
+  for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+   const cx=(crop.x+(x+.5)*crop.w/cols)*sx,cy=(crop.y+(y+.5)*crop.h/rows)*sy;
+   const rad=Math.max(2,Math.floor(Math.min(crop.w/cols*sx,crop.h/rows*sy)*.10));
+   const dat=oc.getImageData(Math.max(0,Math.floor(cx-rad)),Math.max(0,Math.floor(cy-rad)),rad*2,rad*2).data;
+   let R=0,G=0,B=0,n=0;for(let i=0;i<dat.length;i+=4){R+=dat[i];G+=dat[i+1];B+=dat[i+2];n++}
+   board.push(classify(R/n,G/n,B/n));
+  }
+  render();sol.disabled=false;msg.className="ok";msg.textContent="認識完了！ 下の色を確認して、問題なければ「③ ルート探索」。";
+ }catch(e){msg.className="err";msg.textContent="認識エラー: "+e.message;log(e.stack||e.message)}
+};
+function render(){const [cols]=dims();editor.style.gridTemplateColumns=`repeat(${cols},1fr)`;editor.innerHTML="";board.forEach((t,i)=>{const b=document.createElement("button");b.className="cell "+t;b.textContent=NAME[t];b.onclick=()=>{board[i]=TYPES[(TYPES.indexOf(board[i])+1)%6];render()};editor.appendChild(b)})}
+function comboCount(b,c,r){
+ const mark=Array(b.length).fill(false);
+ for(let y=0;y<r;y++){let s=0;for(let x=1;x<=c;x++){if(x<c&&b[y*c+x]===b[y*c+s])continue;if(x-s>=3)for(let k=s;k<x;k++)mark[y*c+k]=true;s=x}}
+ for(let x=0;x<c;x++){let s=0;for(let y=1;y<=r;y++){if(y<r&&b[y*c+x]===b[s*c+x])continue;if(y-s>=3)for(let k=s;k<y;k++)mark[k*c+x]=true;s=y}}
+ let seen=Array(b.length).fill(false),count=0;
+ for(let i=0;i<b.length;i++)if(mark[i]&&!seen[i]){count++;let q=[i];seen[i]=true;while(q.length){let a=q.pop(),x=a%c,y=Math.floor(a/c);[[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy])=>{let nx=x+dx,ny=y+dy,j=ny*c+nx;if(nx>=0&&nx<c&&ny>=0&&ny<r&&mark[j]&&!seen[j]&&b[j]===b[a]){seen[j]=true;q.push(j)}})}}
+ return count;
+}
+sol.onclick=function(){
+ if(!board.length)return;
+ const [c,r]=dims(),secs=+$("#seconds").value,maxSteps=Math.round(secs*6),until=performance.now()+1200;
+ let best={score:-1,path:[]};
+ while(performance.now()<until){
+  let b=board.slice(),cur=Math.floor(Math.random()*b.length),prev=-1,path=[cur];
+  for(let s=0;s<maxSteps;s++){
+   let x=cur%c,y=Math.floor(cur/c),ns=[];if(x)ns.push(cur-1);if(x<c-1)ns.push(cur+1);if(y)ns.push(cur-c);if(y<r-1)ns.push(cur+c);
+   let choices=ns.filter(n=>n!==prev);if(!choices.length)choices=ns;
+   let next=choices[Math.floor(Math.random()*choices.length)];
+   [b[cur],b[next]]=[b[next],b[cur]];prev=cur;cur=next;path.push(cur);
+   let sc=comboCount(b,c,r);if(sc>best.score){best={score:sc,path:path.slice()}}
+  }
+ }
+ route=best.path;draw();msg.className="ok";msg.textContent=`候補：${best.score}コンボ / ${secs}秒設定 / ${Math.max(0,route.length-1)}移動`;
+};
+$("#clear").onclick=()=>{route=[];draw()};
+$("#boardSize").onchange=()=>{board=[];editor.innerHTML="";route=[];sol.disabled=true;draw()};
+window.addEventListener("resize",()=>{if(img.naturalWidth)fitCanvas()});
+})();
+</script>
+</main></body></html>
